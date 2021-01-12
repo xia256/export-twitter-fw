@@ -15,7 +15,6 @@ function readTextFile(path, defaultResult) {
 }
 
 (async function main() {
-
     try {
 
         const config = JSON.parse(readTextFile('config.json', '{}'));
@@ -28,20 +27,36 @@ function readTextFile(path, defaultResult) {
         const client = new Twitter(config.twitter);
         const refreshTarget = config.refreshTargetHours * 60 * 60 * 1000;
 
-        async function getUsers(delayMs, getUsersAsync) {
+        async function getUsers(getUsersAsync) {
             let cursor = undefined;
             let ids = [];
 
-            do {
-                const users = await getUsersAsync(cursor);
+            for (; ;) {
+                let limited = false;
+                let users = undefined;
 
-                ids.push(...users.ids.map(id => id.toString()));
-                cursor = users.next_cursor;
+                try {
+                    users = await getUsersAsync(cursor);
+                    ids.push(...users.ids.map(id => id.toString()));
+                    cursor = users.next_cursor;
+                }
+                catch (ex) {
+                    if (Array.isArray(ex)) {
+                        const [{ code }] = ex;
+                        if (code == 88) { // Rate limit exceeded
+                            console.log(`Hit a rate limit, waiting ${config.delay}ms to try again, time=${new Date().toLocaleString()}`)
+                            await delay(config.delay);
+                            continue;
+                        }
+                    }
+                }
 
-                console.log(`Currently have ${ids.length} ids collected, more=${cursor ? true : false}, waiting ${delayMs}ms`);
-                await delay(delayMs);
+                console.log(`Currently have ${ids.length} ids collected, more=${cursor ? true : false}`);
+                await delay(5);
+                
+                if (!cursor)
+                    break;
             }
-            while (cursor);
 
             const map = {};
             for (let i = 0; i < ids.length; i += 100) {
@@ -59,10 +74,10 @@ function readTextFile(path, defaultResult) {
             return ids.map(id => map[id]).filter(user => user);
         }
 
-        const out_following = ['id,screen_name,following_id,following_sn'];
-        const out_followers = ['id,screen_name,following_id,following_sn'];
-        const all_users = ['id,screen_name'];
-        let all_map = {};
+        const out_following = ['Source,Target'];
+        const out_followers = ['Source,Target'];
+        const all_users = ['id,Label'];
+        const all_map = {};
 
         const targets = readTextFile('targets.txt', '').split('\n').map(s => s.trim().replace('@', ''));
         for (const target of targets) {
@@ -76,15 +91,15 @@ function readTextFile(path, defaultResult) {
             let followers, following;
 
             if (!history[id_str] || (now - history[id_str].time) >= refreshTarget) {
-                console.log(`Need to refresh data on target=${target}`);
+                console.log(`Need to refresh data on target=${target}, id=${id_str}`);
 
-                followers = await getUsers(config.delay, async (cursor) => await client.get('followers/ids', {
+                followers = await getUsers(async (cursor) => await client.get('followers/ids', {
                     screen_name: screen_name,
                     stringify_ids: true,
                     cursor
                 }));
 
-                following = await getUsers(config.delay, async (cursor) => await client.get('friends/ids', {
+                following = await getUsers(async (cursor) => await client.get('friends/ids', {
                     screen_name: screen_name,
                     stringify_ids: true,
                     cursor
@@ -100,15 +115,15 @@ function readTextFile(path, defaultResult) {
                 fs.writeFileSync('history.json', JSON.stringify(history), 'utf8');
             }
             else {
-                console.log(`We have history on target=${target}, so not pulling new data`);
-
                 followers = JSON.parse(readTextFile(`data/history/${id_str}.followers.json`));
                 following = JSON.parse(readTextFile(`data/history/${id_str}.following.json`));
+
+                console.log(`We have history on target=${target}, id=${id_str} so not pulling new data, followers=${followers.length}, following=${following.length}`);
             }
 
             const $all_map = [{ id_str, screen_name }, ...followers, ...following].reduce((acc, user) => (acc[user.id_str] = user, acc), all_map);
-            const $out_following = following.map(user => `${id_str},@${screen_name},${user.id_str},@${user.screen_name}`);
-            const $out_followers = followers.map(user => `${user.id_str},@${user.screen_name},${id_str},@${screen_name}`);
+            const $out_following = following.map(user => `${id_str},${user.id_str}`);
+            const $out_followers = followers.map(user => `${user.id_str},${id_str}`);
 
             out_following.push(...$out_following);
             out_followers.push(...$out_followers);
@@ -122,8 +137,6 @@ function readTextFile(path, defaultResult) {
         fs.writeFileSync('history.json', JSON.stringify(history, null, 2), 'utf8');
     }
     catch (ex) {
-        console.log(ex);
+        return console.error(ex);
     }
-
-
 })();
