@@ -1,4 +1,4 @@
 node_modules/*
-following.csv
-followers.csv
-nodes.csv
+data/*
+config.json
+history.json
