@@ -27,51 +27,69 @@ function readTextFile(path, defaultResult) {
         const client = new Twitter(config.twitter);
         const refreshTarget = config.refreshTargetHours * 60 * 60 * 1000;
 
+        function isRateLimitException(ex) {
+            if (Array.isArray(ex)) {
+                const [{ code }] = ex;
+                if (code == 88) { // Rate limit exceeded
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        async function twitterGuard(name, callbackAsync) {
+            for (; ;) {
+                try {
+                    const result = await callbackAsync();
+                    return result;
+                }
+                catch (ex) {
+                    if (isRateLimitException(ex)) {
+                        console.log(`Hit a rate limit for ${name}, waiting ${config.delay}ms to try again, time=${new Date().toLocaleString()}`)
+                        await delay(config.delay);
+                        continue;
+                    }
+                    throw (ex);
+                }
+            }
+        }
+
         async function getUsers(getUsersAsync) {
             let cursor = undefined;
             let ids = [];
 
             for (; ;) {
-                let limited = false;
-                let users = undefined;
-
-                try {
-                    users = await getUsersAsync(cursor);
-                    ids.push(...users.ids.map(id => id.toString()));
-                    cursor = users.next_cursor;
-                }
-                catch (ex) {
-                    if (Array.isArray(ex)) {
-                        const [{ code }] = ex;
-                        if (code == 88) { // Rate limit exceeded
-                            console.log(`Hit a rate limit, waiting ${config.delay}ms to try again, time=${new Date().toLocaleString()}`)
-                            await delay(config.delay);
-                            continue;
-                        }
-                    }
-                }
+                const users = await twitterGuard('getUserIds', async () => await getUsersAsync(cursor));
+                ids.push(...users.ids.map(id => id.toString()));
+                cursor = users.next_cursor;
 
                 console.log(`Currently have ${ids.length} ids collected, more=${cursor ? true : false}`);
                 await delay(5);
-                
+
                 if (!cursor)
                     break;
             }
 
             const map = {};
             for (let i = 0; i < ids.length; i += 100) {
-                console.log(`Mapping user ids to user objects, ${i + 1} of ${ids.length}`);
+                console.log(`Mapping user ids to objects, at ${i + 1} of ${ids.length}`);
 
-                const users = await client.get('users/lookup', {
+                const users = await twitterGuard('getUserObjects', async () => await client.get('users/lookup', {
                     user_id: [...ids].splice(i, 100).join(',') // take up to 100
-                });
+                }));
 
                 for (const user of users) {
                     map[user.id_str] = user;
                 }
+
+                await delay(5);
             }
 
-            return ids.map(id => map[id]).filter(user => user);
+            const result = ids.map(id => map[id]).filter(user => user);
+            if (result.length != ids.length) {
+                console.log(`Mising ${ids.length - result.length} user objects when converting from ids to objects`);
+            }
+            return result;
         }
 
         const out_following = ['Source,Target'];
@@ -84,7 +102,7 @@ function readTextFile(path, defaultResult) {
             console.log(`Working on target=${target}`);
             const now = Date.now();
 
-            let [{ screen_name, id_str }] = (await client.get('users/lookup', {
+            let [{ screen_name, id_str }] = await twitterGuard('getTarget', async () => await client.get('users/lookup', {
                 screen_name: target
             }));
 
@@ -131,8 +149,7 @@ function readTextFile(path, defaultResult) {
 
         all_users.push(...Object.values(all_map).map(user => `${user.id_str},@${user.screen_name}`));
 
-        fs.writeFileSync('data/following.csv', Array.from(new Set(out_following)).join('\r\n'), 'utf8');
-        fs.writeFileSync('data/followers.csv', Array.from(new Set(out_followers)).join('\r\n'), 'utf8');
+        fs.writeFileSync('data/data.csv', Array.from(new Set([...out_following, ...out_followers])).join('\r\n'), 'utf8');
         fs.writeFileSync('data/nodes.csv', all_users.join('\r\n'), 'utf8');
         fs.writeFileSync('history.json', JSON.stringify(history, null, 2), 'utf8');
     }
