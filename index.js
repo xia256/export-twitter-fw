@@ -64,7 +64,8 @@ function readTextFile(path, defaultResult) {
         const all_users = ['id,screen_name'];
         let all_map = {};
 
-        for (const target of config.targets) {
+        const targets = readTextFile('targets.txt', '').split('\n').map(s => s.trim().replace('@', ''));
+        for (const target of targets) {
             console.log(`Working on target=${target}`);
             const now = Date.now();
 
@@ -119,7 +120,6 @@ function readTextFile(path, defaultResult) {
         fs.writeFileSync('data/followers.csv', Array.from(new Set(out_followers)).join('\r\n'), 'utf8');
         fs.writeFileSync('data/nodes.csv', all_users.join('\r\n'), 'utf8');
         fs.writeFileSync('history.json', JSON.stringify(history, null, 2), 'utf8');
-
     }
     catch (ex) {
         console.log(ex);
